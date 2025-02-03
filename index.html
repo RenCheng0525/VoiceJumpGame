@@ -1,0 +1,1089 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Chrome Dino Voice Jump Game</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      background: #f7f7f7;
+      font-family: Arial, sans-serif;
+      overflow: hidden;
+    }
+
+    .container {
+      display: flex;
+      gap: 20px;
+      justify-content: center;
+      position: relative;
+    }
+
+    #gameCanvas {
+      border: 1px solid #2f2f2f;
+      background: white;
+      border-radius: 5px;
+    }
+
+    #startButton {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      padding: 10px 20px;
+      font-size: 20px;
+      cursor: pointer;
+      background: #2f2f2f;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      z-index: 100;
+    }
+
+    #audioPanel {
+      background: rgba(255, 255, 255, 0.9);
+      padding: 15px;
+      border-radius: 5px;
+      width: 200px;
+      border: 1px solid #2f2f2f;
+    }
+
+    .meter {
+      height: 20px;
+      background: #eee;
+      border-radius: 3px;
+      margin: 5px 0;
+      overflow: hidden;
+    }
+
+    .meter-fill {
+      height: 100%;
+      background: #535353;
+      transition: width 0.1s;
+    }
+
+    #spectrumCanvas {
+      width: 200px;
+      height: 100px;
+      background: #fff;
+      margin-top: 10px;
+      border: 1px solid #2f2f2f;
+    }
+
+    .data-row {
+      display: flex;
+      justify-content: space-between;
+      margin: 5px 0;
+      font-size: 12px;
+    }
+
+    .control-panel {
+      margin-top: 20px;
+      padding-top: 15px;
+      border-top: 1px solid #ccc;
+    }
+
+    .control-select {
+      width: 100%;
+      padding: 8px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      margin: 10px 0;
+    }
+
+    .mode-description {
+      font-size: 12px;
+      color: #666;
+      margin: 10px 0;
+      font-style: italic;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <canvas id="gameCanvas" width="1200" height="600"></canvas>
+
+    <div id="audioPanel">
+      <h3>Audio Input Data</h3>
+      <div class="data-row">
+        <span>Current Volume:</span>
+        <span id="volumeValue">0</span>
+      </div>
+      <div class="meter">
+        <div id="volumeMeter" class="meter-fill"></div>
+      </div>
+      <div class="data-row">
+        <span>Detection Value:</span>
+        <span id="detectionValue">0</span>
+      </div>
+      <div class="meter">
+        <div id="detectionMeter" class="meter-fill"></div>
+      </div>
+      <div class="data-row">
+        <span>Threshold:</span>
+        <span id="thresholdValue">50</span>
+      </div>
+      <div class="data-row">
+        <span>Voice Detected:</span>
+        <span id="voiceDetected">No</span>
+      </div>
+      <h3>Frequency Spectrum</h3>
+      <canvas id="spectrumCanvas" width="200" height="100"></canvas>
+
+      <div class="control-panel">
+        <h3>Voice Control Mode</h3>
+        <select id="controlMode" class="control-select">
+          <option value="continuous">Continuous Voice</option>
+          <option value="pitch">Pitch Control</option>
+          <option value="tonguing">Tongue Control</option>
+        </select>
+        <div class="mode-description">
+          <span id="modeDescription">持續發出「啊～～～」的聲音來跳躍<br>聲音持續時維持跳躍狀態</span>
+        </div>
+        <div class="control-stats">
+          <div class="data-row">
+            <span>Pitch Level:</span>
+            <span id="pitchValue">0</span>
+          </div>
+          <div class="data-row">
+            <span>Tongue Count:</span>
+            <span id="tongueCount">0</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+    <button id="startButton">Click to Start</button>
+
+    <script>
+      console.log('Page loaded');
+
+      const canvas = document.getElementById('gameCanvas');
+      const ctx = canvas.getContext('2d');
+
+      // 遊戲常數
+      const GAME_CONFIG = {
+        DINO: {
+          startX: 80,
+          groundY: 500 - 47, // groundY 設為地面基準 - 恐龍高度
+          width: 44,
+          height: 47,
+          jumpForce: -18,
+          gravity: 0.7
+        },
+        GAME: {
+          obstacleSpeed: 6,
+          minObstacleInterval: 1200,
+          scorePerObstacle: 10
+        },
+        AUDIO: {
+          threshold: 50,
+          fftSize: 2048,
+          smoothingTimeConstant: 0.8,
+          tongueThreshold: 100,
+          pitchMultiplier: 0.6,
+          minPitch: 85,
+          maxPitch: 255,
+          pitchSmoothingFactor: 0.8,
+          pitchUpdateInterval: 50
+        }
+      };
+
+
+      // 精靈圖資源配置
+      const SPRITE_CONFIG = {
+        DINO: {
+          DEFAULT: { x: 1340, y: 2, width: 88, height: 94, scale: 1 },
+          RUN: [
+            { x: 1340, y: 2, width: 88, height: 94, scale: 1 },
+            { x: 1442, y: 2, width: 88, height: 94, scale: 1 }
+          ],
+          JUMP: { x: 1340, y: 2, width: 88, height: 94, scale: 1 },
+          DEAD: { x: 1340, y: 2, width: 88, height: 94, scale: 1 }
+        },
+        OBSTACLES: {
+          CACTUS_SMALL: { x: 446, y: 2, width: 34, height: 70, scale: 1 },
+          CACTUS_MEDIUM: { x: 480, y: 2, width: 68, height: 70, scale: 1 },
+          CACTUS_LARGE: { x: 652, y: 2, width: 50, height: 100, scale: 1 },
+          PTERODACTYL: [
+            { x: 260, y: 2, width: 92, height: 80, scale: 1 },
+            { x: 352, y: 2, width: 92, height: 80, scale: 1 }
+          ]
+        },
+        GROUND: { x: 2, y: 104, width: 2400, height: 24, scale: 1 }
+      };
+
+      // 加載精靈圖
+      const loadSprite = () => {
+        return new Promise((resolve, reject) => {
+          const sprite = new Image();
+          sprite.onload = () => resolve(sprite);
+          sprite.onerror = reject;
+          sprite.crossOrigin = "Anonymous";
+          // 使用 2x 版本的圖片以獲得更好的畫質
+          sprite.src = 'https://raw.githubusercontent.com/wayou/t-rex-runner/gh-pages/assets/offline-sprite-2x.png';
+        });
+      };
+
+      // 音訊管理器
+      class AudioManager {
+        constructor() {
+          this.audioContext = null;
+          this.analyser = null;
+          this.dataArray = null;
+          this.initialized = false;
+          this.lastTongueTime = 0;
+          this.tongueCount = 0;
+          this.lastVoiceLevel = 0;
+
+          this.pitchBuffer = [];
+          this.pitchBufferSize = 3;
+          this.lastPitchTime = 0;
+          this.pitchUpdateInterval = 50; // 每50ms更新一次音高
+        }
+
+        async initialize() {
+          try {
+            // 初始化音訊上下文
+            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const source = this.audioContext.createMediaStreamSource(stream);
+
+            // 添加濾波器以過濾噪聲
+            const highpassFilter = this.audioContext.createBiquadFilter();
+            highpassFilter.type = "highpass";
+            highpassFilter.frequency.value = 80; // 高通濾波器，過濾低頻噪聲（如空調聲）
+
+            const lowpassFilter = this.audioContext.createBiquadFilter();
+            lowpassFilter.type = "lowpass";
+            lowpassFilter.frequency.value = 3000; // 低通濾波器，過濾高頻噪聲（如尖銳聲音）
+
+            // 將濾波器與音訊源和分析器串聯
+            source.connect(highpassFilter);
+            highpassFilter.connect(lowpassFilter);
+
+            this.analyser = this.audioContext.createAnalyser();
+            lowpassFilter.connect(this.analyser);
+
+            // 配置分析器
+            this.analyser.fftSize = GAME_CONFIG.AUDIO.fftSize;
+            this.analyser.smoothingTimeConstant = GAME_CONFIG.AUDIO.smoothingTimeConstant;
+
+            // 初始化頻譜數據緩存
+            this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+
+            // 背景噪聲校正
+            let noiseLevel = 0;
+            for (let i = 0; i < 50; i++) { // 收集多幀數據來計算背景噪聲
+              this.analyser.getByteFrequencyData(this.dataArray);
+              noiseLevel += this.dataArray.reduce((sum, value) => sum + value, 0);
+            }
+            noiseLevel = noiseLevel / (50 * this.dataArray.length); // 平均背景噪聲
+            this.noiseThreshold = noiseLevel * 1.2; // 動態設置音量檢測閾值（略高於背景噪聲）
+
+            console.log('Audio initialized successfully');
+            console.log('Background noise level detected:', noiseLevel);
+
+            this.initialized = true; // 設置初始化成功標誌
+            return true;
+          } catch (err) {
+            console.error('Error initializing audio:', err);
+            return false;
+          }
+        }
+
+        getSmoothedPitch() {
+          const now = Date.now();
+          if (now - this.lastPitchTime < this.pitchUpdateInterval) {
+            // 如果更新間隔太短，返回上次計算的結果
+            return this.lastPitchValue;
+          }
+
+          const currentPitch = this.getPitch_1();
+
+          if (currentPitch > 0) {
+            this.pitchBuffer.push(currentPitch);
+            if (this.pitchBuffer.length > this.pitchBufferSize) {
+              this.pitchBuffer.shift();
+            }
+          }
+
+          if (this.pitchBuffer.length > 0) {
+            const sum = this.pitchBuffer.reduce((a, b) => a + b, 0);
+            this.lastPitchValue = sum / this.pitchBuffer.length;
+          } else {
+            this.lastPitchValue = 0;
+          }
+
+          this.lastPitchTime = now;
+          return this.lastPitchValue;
+        }
+
+        getSmoothedFrequencyData() {
+          const smoothedData = new Float32Array(this.dataArray.length);
+          const alpha = 0.8; // 平滑係數
+
+          for (let i = 0; i < this.dataArray.length; i++) {
+            smoothedData[i] = alpha * (this.previousDataArray?.[i] || 0) + (1 - alpha) * this.dataArray[i];
+          }
+
+          this.previousDataArray = smoothedData;
+          return smoothedData;
+        }
+
+        getRawVoiceLevel() {
+          if (!this.initialized) return 0;
+
+          this.analyser.getByteFrequencyData(this.dataArray);
+
+          // 計算語音檢測值（使用前幾個頻段的平均值）
+          const samples = 4;
+          let voiceSum = 0;
+          for (let i = 0; i < samples; i++) {
+            voiceSum += this.dataArray[i];
+          }
+          const voiceLevel = voiceSum / samples;
+
+          this.lastVoiceLevel = voiceLevel;
+          return voiceLevel;
+        }
+
+        getVoiceLevel() {
+          const voiceLevel = this.getRawVoiceLevel();
+
+          // 計算總體音量
+          const totalSum = Array.from(this.dataArray).reduce((a, b) => a + b, 0);
+          const averageVolume = totalSum / this.dataArray.length;
+
+          // 更新視覺化
+          this.updateVisualization(voiceLevel, averageVolume);
+
+          return voiceLevel;
+        }
+
+        getPitch() {
+          if (!this.initialized) return 0;
+
+          const lowFreq = Array.from(this.dataArray.slice(0, 10));
+          const max = Math.max(...lowFreq);
+          const normalizedPitch = max / 255;  // 標準化到 0-1
+          return normalizedPitch;
+        }
+
+        getPitch_1() {
+          if (!this.initialized) return 0;
+
+          const buffer = new Float32Array(this.analyser.fftSize);
+          this.analyser.getFloatTimeDomainData(buffer); // 獲取時間域信號
+
+          const autoCorrelation = (buf) => {
+            const size = buf.length;
+            let rms = 0;
+
+            // 計算 RMS（能量）
+            for (let i = 0; i < size; i++) {
+              rms += buf[i] * buf[i];
+            }
+            rms = Math.sqrt(rms / size);
+            if (rms < 0.01) return -1; // 若能量太小，視為靜音
+
+            let r1 = 0, r2 = size - 1;
+            const threshold = 0.2;
+            for (let i = 0; i < size / 2; i++) {
+              if (Math.abs(buf[i]) < threshold) {
+                r1 = i;
+                break;
+              }
+            }
+            for (let i = 1; i < size / 2; i++) {
+              if (Math.abs(buf[size - i]) < threshold) {
+                r2 = size - i;
+                break;
+              }
+            }
+
+            const croppedBuffer = buf.slice(r1, r2);
+            const len = croppedBuffer.length;
+            const autocorr = new Array(len).fill(0);
+
+            // 計算自相關
+            for (let lag = 0; lag < len; lag++) {
+              for (let i = 0; i < len - lag; i++) {
+                autocorr[lag] += croppedBuffer[i] * croppedBuffer[i + lag];
+              }
+            }
+
+            let d = 0;
+            while (autocorr[d] > autocorr[d + 1]) d++; // 找到自相關下降的點
+            let maxVal = -1, maxPos = -1;
+            for (let i = d; i < len; i++) {
+              if (autocorr[i] > maxVal) {
+                maxVal = autocorr[i];
+                maxPos = i;
+              }
+            }
+
+            return maxPos !== -1 ? maxPos : -1;
+          };
+
+          const pitch = autoCorrelation(buffer);
+          const sampleRate = this.audioContext.sampleRate;
+
+          // 根據樣本數據轉換成頻率
+          return pitch > 0 ? sampleRate / pitch : 0;
+        }
+
+        detectTonguing() {
+          if (!this.initialized) return 0;
+
+          const now = Date.now();
+          const voiceLevel = this.lastVoiceLevel;
+          const TONGUE_THRESHOLD = 100; // 提高閾值
+          const MIN_TONGUE_INTERVAL = 200; // 增加時間間隔
+
+          if (voiceLevel > TONGUE_THRESHOLD && now - this.lastTongueTime > MIN_TONGUE_INTERVAL) {
+            this.lastTongueTime = now;
+            this.tongueCount++;
+            return 1;
+          }
+          return 0;
+        }
+
+        updateVisualization(voiceLevel, averageVolume) {
+          // 更新音量值
+          document.getElementById('volumeValue').textContent = Math.round(averageVolume);
+          document.getElementById('volumeMeter').style.width = `${Math.min(averageVolume, 100)}%`;
+
+          // 更新檢測值
+          document.getElementById('detectionValue').textContent = Math.round(voiceLevel);
+          document.getElementById('detectionMeter').style.width = `${Math.min(voiceLevel, 100)}%`;
+
+          // 更新是否檢測到聲音
+          const isVoiceDetected = voiceLevel > GAME_CONFIG.AUDIO.threshold;
+          document.getElementById('voiceDetected').textContent = isVoiceDetected ? 'Yes' : 'No';
+          document.getElementById('voiceDetected').style.color = isVoiceDetected ? '#4CAF50' : '#f44336';
+
+          // 更新頻譜圖
+          this.drawSpectrum();
+
+          // 更新模式指示器
+          this.updateModeIndicator(voiceLevel);
+        }
+
+        drawSpectrum() {
+          const spectrumCanvas = document.getElementById('spectrumCanvas');
+          const spectrumCtx = spectrumCanvas.getContext('2d');
+
+          spectrumCtx.fillStyle = 'white';
+          spectrumCtx.fillRect(0, 0, spectrumCanvas.width, spectrumCanvas.height);
+
+          const barWidth = spectrumCanvas.width / this.dataArray.length;
+          const heightScale = spectrumCanvas.height / 255;
+
+          spectrumCtx.fillStyle = '#2196F3';
+          for (let i = 0; i < this.dataArray.length; i++) {
+            const barHeight = this.dataArray[i] * heightScale;
+            spectrumCtx.fillRect(
+              i * barWidth,
+              spectrumCanvas.height - barHeight,
+              barWidth - 1,
+              barHeight
+            );
+          }
+        }
+
+        updateModeIndicator(voiceLevel) {
+          const mode = document.getElementById('controlMode').value;
+          const now = Date.now();
+
+          // 只在需要時創建指示器
+          if ((mode === 'continuous' && voiceLevel > GAME_CONFIG.AUDIO.threshold) ||
+            (mode === 'pitch' && voiceLevel > GAME_CONFIG.AUDIO.threshold) ||
+            (mode === 'tonguing' && voiceLevel > 80 && now - this.lastTongueTime < 100)) {
+
+            const modeIndicator = document.createElement('div');
+            modeIndicator.style.cssText = `
+                position: absolute;
+                left: ${Math.random() * 150 + 25}px;
+                top: 50%;
+                transform: translateY(-50%);
+                padding: 5px 10px;
+                background: rgba(0,0,0,0.5);
+                color: white;
+                border-radius: 5px;
+                font-size: 12px;
+                animation: fadeOut 0.5s forwards;
+            `;
+
+            switch (mode) {
+              case 'continuous':
+                modeIndicator.textContent = '持續發聲中...';
+                modeIndicator.style.background = '#4CAF50';
+                break;
+
+              case 'pitch':
+                const pitch = this.getPitch();
+                modeIndicator.textContent = `音高: ${(pitch * 100).toFixed(0)}%`;
+                modeIndicator.style.background = '#2196F3';
+                break;
+
+              case 'tonguing':
+                modeIndicator.textContent = '舌音!';
+                modeIndicator.style.background = '#E91E63';
+                break;
+            }
+
+            const panel = document.getElementById('audioPanel');
+            panel.appendChild(modeIndicator);
+
+            setTimeout(() => modeIndicator.remove(), 1000);
+          }
+        }
+      }
+
+      // 遊戲管理器
+      class Game {
+        constructor(canvas) {
+          this.canvas = canvas;
+          this.ctx = canvas.getContext('2d');
+          this.audioManager = new AudioManager();
+
+          this.score = 0;
+          this.isGameOver = false;
+          this.isRunning = false;
+
+          // 恐龍狀態
+          this.dino = {
+            x: GAME_CONFIG.DINO.startX,
+            y: GAME_CONFIG.DINO.groundY, // 起始位置設為 groundY
+            velocityY: 0,
+            isJumping: false
+          };
+
+          // 障礙物陣列
+          this.obstacles = [];
+          this.lastObstacleTime = 0;
+
+          this.sprite = null;
+          this.animationFrame = 0;
+          this.frameCount = 0;
+          this.groundX = 0;
+        }
+
+        async start() {
+          if (await this.audioManager.initialize()) {
+            this.isRunning = true;
+            this.gameLoop();
+            console.log('Game started');
+          } else {
+            alert('Failed to initialize audio. Please check your microphone access.');
+          }
+        }
+
+        update() {
+          if (!this.isRunning || this.isGameOver) return;
+
+          const voiceLevel = this.audioManager.getVoiceLevel();
+          const controlMode = document.getElementById('controlMode').value;
+
+          switch (controlMode) {
+            case 'continuous':
+              // 持續發聲模式 - 類似直升機效果
+              if (voiceLevel > GAME_CONFIG.AUDIO.threshold) {
+                if (!this.dino.isJumping) {
+                  this.dino.velocityY = GAME_CONFIG.DINO.jumpForce;
+                  this.dino.isJumping = true;
+                } else {
+                  // 懸浮/上升效果
+                  this.dino.velocityY = Math.min(this.dino.velocityY, -3);
+                  if (this.dino.y > GAME_CONFIG.DINO.groundY - 150) {
+                    this.dino.velocityY = Math.max(this.dino.velocityY, GAME_CONFIG.DINO.jumpForce * 0.3);
+                  }
+                }
+              }
+              break;
+
+            case 'pitch':
+              if (voiceLevel > GAME_CONFIG.AUDIO.threshold) {
+                const pitch = this.audioManager.getSmoothedPitch();
+
+                // 人聲基本頻率範圍
+                const minPitch = 85;   // 最低音
+                const maxPitch = 255;  // 最高音
+
+                // 音高標準化
+                let normalizedPitch = (pitch - minPitch) / (maxPitch - minPitch);
+                normalizedPitch = Math.max(0, Math.min(1, normalizedPitch));
+
+                // 更新 UI 顯示
+                document.getElementById('pitchValue').textContent =
+                  `${Math.round(pitch)}Hz (${(normalizedPitch * 100).toFixed(0)}%)`;
+
+                if (!this.dino.isJumping) {
+                  // 跳躍力度範圍
+                  const minJumpForce = GAME_CONFIG.DINO.jumpForce * 0.7;
+                  const maxJumpForce = GAME_CONFIG.DINO.jumpForce * 1.3;
+
+                  // 計算實際跳躍力度
+                  this.dino.velocityY = minJumpForce +
+                    (maxJumpForce - minJumpForce) * normalizedPitch;
+                  this.dino.isJumping = true;
+                }
+              }
+              break;
+
+            case 'tonguing':
+              // 舌音控制模式 - 允許二段跳
+              const tongueCount = this.audioManager.detectTonguing();
+              if (tongueCount > 0) {
+                document.getElementById('tongueCount').textContent =
+                  this.audioManager.tongueCount;
+
+                if (!this.dino.isJumping) {
+                  // 第一段跳
+                  this.dino.velocityY = GAME_CONFIG.DINO.jumpForce;
+                  this.dino.isJumping = true;
+                  this.dino.hasDoubleJumped = false; // 重置二段跳標記
+                } else if (!this.dino.hasDoubleJumped) {
+                  // 第二段跳
+                  this.dino.velocityY = GAME_CONFIG.DINO.jumpForce * 0.8;
+                  this.dino.hasDoubleJumped = true; // 標記已使用二段跳
+                }
+              }
+              break;
+          }
+
+          // 重力效果（根據模式調整）
+          this.dino.y += this.dino.velocityY;
+
+          if (this.dino.y < 200) { // 限制跳躍最高點
+            this.dino.y = 200;
+            this.dino.velocityY = 0;
+          }
+
+          // 不同模式使用不同的重力
+          switch (controlMode) {
+            case 'continuous':
+              this.dino.velocityY += GAME_CONFIG.DINO.gravity * 0.5; // 較小的重力
+              break;
+            case 'pitch':
+              this.dino.velocityY += GAME_CONFIG.DINO.gravity * 0.8; // 中等重力
+              break;
+            case 'tonguing':
+              this.dino.velocityY += GAME_CONFIG.DINO.gravity; // 標準重力
+              break;
+          }
+
+          if (this.dino.y < 100) { // 限制最小高度
+            this.dino.y = 100;
+            this.dino.velocityY = 0;
+          }
+
+          // 地面碰撞檢測
+          if (this.dino.y > GAME_CONFIG.DINO.groundY) {
+            this.dino.y = GAME_CONFIG.DINO.groundY;
+            this.dino.velocityY = 0;
+            this.dino.isJumping = false;
+            // 落地時重置二段跳
+            if (controlMode === 'tonguing') {
+              this.dino.hasDoubleJumped = false;
+            }
+          }
+
+          // 更新障礙物和碰撞檢測
+          this.updateObstacles();
+          this.checkCollisions();
+        }
+
+        updateObstacles() {
+          // 移動現有障礙物
+          this.obstacles = this.obstacles.filter(obstacle => {
+            obstacle.x -= GAME_CONFIG.GAME.obstacleSpeed;
+            return obstacle.x > -obstacle.width;
+          });
+
+          // 生成新障礙物
+          const now = Date.now();
+          if (now - this.lastObstacleTime > GAME_CONFIG.GAME.minObstacleInterval) {
+            const types = ['CACTUS_SMALL', 'CACTUS_MEDIUM', 'CACTUS_LARGE'];
+
+            if (this.score > 50) {
+              types.push('PTERODACTYL');
+            }
+
+            const type = types[Math.floor(Math.random() * types.length)];
+            const sprite = type === 'PTERODACTYL'
+              ? SPRITE_CONFIG.OBSTACLES.PTERODACTYL[0]
+              : SPRITE_CONFIG.OBSTACLES[type];
+
+            // 獲取地面精靈設定
+            const ground = SPRITE_CONFIG.GROUND;
+            // 計算實際地面位置：畫布高度 - 地面高度
+            const groundY = this.canvas.height - 100;
+
+            let obstacleY;
+            if (type === 'PTERODACTYL') {
+              obstacleY = groundY - sprite.height - 80;
+            } else {
+              // 修正：確保障礙物精準地放在地面上
+              obstacleY = groundY - sprite.height + (ground.height / 2);
+            }
+
+            this.obstacles.push({
+              type: type,
+              x: this.canvas.width,
+              y: obstacleY,
+              width: sprite.width,
+              height: sprite.height,
+              frame: 0,
+              passed: false
+            });
+
+            this.lastObstacleTime = now;
+          }
+
+          // 更新分數
+          this.obstacles.forEach(obstacle => {
+            if (!obstacle.passed && obstacle.x + obstacle.width < this.dino.x) {
+              this.score += GAME_CONFIG.GAME.scorePerObstacle;
+              obstacle.passed = true;
+            }
+          });
+        }
+
+        checkCollisions() {
+          for (const obstacle of this.obstacles) {
+            if (this.isColliding(obstacle)) {
+              this.gameOver();
+              break;
+            }
+          }
+        }
+
+        isColliding(obstacle) {
+          return !(
+            this.dino.x + GAME_CONFIG.DINO.width < obstacle.x ||
+            this.dino.x > obstacle.x + obstacle.width ||
+            this.dino.y + GAME_CONFIG.DINO.height < obstacle.y ||
+            this.dino.y > obstacle.y + obstacle.height
+          );
+        }
+
+        async initialize() {
+          try {
+            this.sprite = await loadSprite();
+            return true;
+          } catch (err) {
+            console.error('Failed to load sprite:', err);
+            return false;
+          }
+        }
+
+        draw() {
+          // 清除畫布
+          this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+          // 繪製地面（捲動效果）
+          this.drawGround();
+
+          // 繪製恐龍（動畫）
+          this.drawDino();
+
+          // 繪製障礙物
+          this.drawObstacles();
+
+          // 繪製分數
+          this.drawScore();
+
+          // 視覺提示
+          this.drawVoiceIndicator();
+
+          // 更新動畫幀
+          this.frameCount++;
+          if (this.frameCount % 6 === 0) { // 每6幀更新一次動畫
+            this.animationFrame = (this.animationFrame + 1) % 2;
+          }
+        }
+
+        drawVoiceIndicator() {
+          const x = 20;  // 左上角位置
+          const y = 60;
+          const width = 150;
+          const height = 40;
+
+          // 繪製框架
+          this.ctx.strokeStyle = '#333';
+          this.ctx.lineWidth = 2;
+          this.ctx.strokeRect(x, y, width, height);
+
+          // 獲取當前控制模式
+          const mode = document.getElementById('controlMode').value;
+          const voiceLevel = this.audioManager.getVoiceLevel();
+
+          // 根據不同模式顯示不同的視覺效果
+          switch (mode) {
+            case 'continuous':
+              // 顯示持續時間條
+              const barWidth = (voiceLevel / 100) * width;
+              this.ctx.fillStyle = '#4CAF50';
+              this.ctx.fillRect(x, y, barWidth, height);
+              break;
+
+            case 'pitch':
+              // 顯示音高指示器
+              const pitch = this.audioManager.getPitch();
+              const pitchY = y + height - (pitch * height);
+              this.ctx.beginPath();
+              this.ctx.fillStyle = '#2196F3';
+              this.ctx.arc(x + width / 2, pitchY, 10, 0, Math.PI * 2);
+              this.ctx.fill();
+              break;
+
+            case 'tonguing':
+              // 顯示舌音計數和時間窗口
+              this.ctx.font = '20px Arial';
+              this.ctx.fillStyle = '#E91E63';
+              this.ctx.textAlign = 'center';
+              this.ctx.fillText(
+                `${this.audioManager.tongueCount || 0}`,
+                x + width / 2,
+                y + height / 2 + 8
+              );
+              break;
+          }
+
+          // 顯示當前模式名稱
+          this.ctx.font = '12px Arial';
+          this.ctx.fillStyle = '#333';
+          this.ctx.textAlign = 'center';
+          this.ctx.fillText(
+            mode.charAt(0).toUpperCase() + mode.slice(1),
+            x + width / 2,
+            y - 5
+          );
+        }
+
+        drawDino() {
+          let dinoSprite;
+          if (this.isGameOver) {
+            dinoSprite = SPRITE_CONFIG.DINO.DEAD;
+          } else if (this.dino.isJumping) {
+            dinoSprite = SPRITE_CONFIG.DINO.JUMP;
+          } else {
+            dinoSprite = SPRITE_CONFIG.DINO.RUN[this.animationFrame];
+          }
+
+          const scale = dinoSprite.scale || 1;
+
+          this.ctx.drawImage(
+            this.sprite,
+            dinoSprite.x, dinoSprite.y,
+            dinoSprite.width, dinoSprite.height,
+            this.dino.x, this.dino.y, // 使用更新後的 y 值
+            dinoSprite.width * scale, dinoSprite.height * scale
+          );
+        }
+
+        drawObstacles() {
+          this.obstacles.forEach(obstacle => {
+            let sprite;
+            if (obstacle.type === 'PTERODACTYL') {
+              obstacle.frame = Math.floor(this.frameCount / 10) % 2;
+              sprite = SPRITE_CONFIG.OBSTACLES.PTERODACTYL[obstacle.frame];
+            } else {
+              sprite = SPRITE_CONFIG.OBSTACLES[obstacle.type];
+            }
+
+            const scale = sprite.scale || 1;
+            this.ctx.drawImage(
+              this.sprite,
+              sprite.x, sprite.y,
+              sprite.width, sprite.height,
+              obstacle.x, obstacle.y, // 確保 y 值來自更新後的邏輯
+              sprite.width * scale, sprite.height * scale
+            );
+          });
+        }
+
+
+        drawGround() {
+          const ground = SPRITE_CONFIG.GROUND;
+          const scale = ground.scale || 1;
+
+          // 設定地面高度為畫布底部
+          const groundYPosition = this.canvas.height - 100;
+
+          this.groundX = (this.groundX - GAME_CONFIG.GAME.obstacleSpeed) % (ground.width * scale);
+
+          // 繪製第一部分地面
+          this.ctx.drawImage(
+            this.sprite,
+            ground.x, ground.y,
+            ground.width, ground.height,
+            this.groundX, groundYPosition,
+            ground.width * scale, ground.height * scale
+          );
+
+          // 繪製第二部分地面（接續捲動效果）
+          this.ctx.drawImage(
+            this.sprite,
+            ground.x, ground.y,
+            ground.width, ground.height,
+            this.groundX + (ground.width * scale), groundYPosition,
+            ground.width * scale, ground.height * scale
+          );
+        }
+
+        drawScore() {
+          this.ctx.fillStyle = '#535353';
+          this.ctx.font = 'bold 20px Arial';
+          this.ctx.textAlign = 'right';
+          this.ctx.fillText(`Score: ${this.score.toString().padStart(5, '0')}`,
+            this.canvas.width - 20, 30);
+        }
+
+        gameLoop() {
+          if (!this.isRunning) return;
+
+          this.update();
+          this.draw();
+
+          if (!this.isGameOver) {
+            requestAnimationFrame(() => this.gameLoop());
+          }
+        }
+
+        gameOver() {
+          this.isGameOver = true;
+          this.isRunning = false;
+
+          // 繪製遊戲結束畫面
+          this.ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+          this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+          this.ctx.fillStyle = 'white';
+          this.ctx.font = 'bold 48px Arial';
+          this.ctx.textAlign = 'center';
+          this.ctx.fillText('GAME OVER', this.canvas.width / 2, this.canvas.height / 2);
+
+          this.ctx.font = '24px Arial';
+          this.ctx.fillText(
+            `Score: ${this.score}`,
+            this.canvas.width / 2,
+            this.canvas.height / 2 + 40
+          );
+
+          // 顯示重新開始按鈕
+          document.getElementById('startButton').style.display = 'block';
+          document.getElementById('startButton').textContent = 'Try Again';
+        }
+      }
+
+      function showError(message) {
+        const errorDiv = document.createElement('div');
+        errorDiv.style.cssText = `
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(255, 0, 0, 0.8);
+        color: white;
+        padding: 20px;
+        border-radius: 5px;
+        text-align: center;
+        z-index: 1000;
+    `;
+        errorDiv.textContent = message;
+        document.body.appendChild(errorDiv);
+        setTimeout(() => errorDiv.remove(), 3000);
+      }
+
+      document.getElementById('controlMode').addEventListener('change', (e) => {
+        const mode = e.target.value;
+
+        // 更新說明文字
+        const descriptions = {
+          continuous: "長音控制：發出持續的「啊～」聲音來跳躍",
+          pitch: "音高控制：聲音越高跳得越高（啊～由低到高）",
+          tonguing: "舌音控制：發出「他他」音可以二段跳（在空中時也可以）"
+        };
+        document.getElementById('modeDescription').textContent = descriptions[mode];
+
+        // 顯示教學提示泡泡
+        const tutorialDiv = document.createElement('div');
+        tutorialDiv.style.cssText = `
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0,0,0,0.8);
+        color: white;
+        padding: 20px;
+        border-radius: 10px;
+        text-align: center;
+        z-index: 1000;
+        font-size: 16px;
+        max-width: 300px;
+    `;
+
+        const controls = {
+          continuous: "持續發出「啊～～～」的聲音來跳躍<br>聲音持續時維持跳躍狀態",
+          pitch: "發出不同音高的「啊～」聲音<br>音高越高 = 跳得越高<br>試試由低音到高音的變化",
+          tonguing: "快速發出「他他」的聲音<br>可以在空中時發出第二次<br>時機抓對可以二段跳"
+        };
+
+        tutorialDiv.innerHTML = `
+        <h3 style="margin: 0 0 10px 0">${descriptions[mode]}</h3>
+        <div style="font-size: 14px; line-height: 1.5">
+            ${controls[mode]}
+        </div>
+    `;
+
+        document.body.appendChild(tutorialDiv);
+        setTimeout(() => tutorialDiv.remove(), 4000);  // 顯示久一點
+
+        // 重置相關計數器
+        if (game && game.audioManager) {
+          game.audioManager.tongueCount = 0;
+          document.getElementById('tongueCount').textContent = '0';
+          document.getElementById('pitchValue').textContent = '0';
+        }
+      });
+
+      // 初始化
+      const startButton = document.getElementById('startButton');
+      let game = null;
+
+      startButton.addEventListener('click', async () => {
+        try {
+          if (game && game.isGameOver) {
+            game = new Game(canvas);
+          } else if (!game) {
+            game = new Game(canvas);
+          }
+
+          // 等待圖片載入
+          const spriteLoaded = await game.initialize();
+          if (!spriteLoaded) {
+            throw new Error('Failed to load game resources');
+          }
+
+          // 等待音訊初始化
+          const audioLoaded = await game.audioManager.initialize();
+          if (!audioLoaded) {
+            throw new Error('Failed to initialize audio');
+          }
+
+          // 開始遊戲
+          game.start();
+          startButton.style.display = 'none';
+        } catch (err) {
+          console.error('Game initialization failed:', err);
+          showError(err.message);
+        }
+      });
+    </script>
+</body>
+
+</html>
